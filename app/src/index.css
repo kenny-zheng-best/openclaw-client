@@ -1,5 +1,69 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap') layer(base);
+@import 'tailwindcss';
 
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-background: #090f13;
+  --color-foreground: #e9f1f5;
+
+  --color-card: #0d1419;
+  --color-card-foreground: #e9f1f5;
+
+  --color-popover: #0d1419;
+  --color-popover-foreground: #e9f1f5;
+
+  --color-primary: #66d3b2;
+  --color-primary-foreground: #021014;
+
+  --color-secondary: #17232d;
+  --color-secondary-foreground: #e9f1f5;
+
+  --color-muted: #121c23;
+  --color-muted-foreground: #8795a0;
+
+  --color-accent: #17232d;
+  --color-accent-foreground: #e9f1f5;
+
+  --color-destructive: #ff6b6b;
+  --color-destructive-foreground: #fef2f2;
+
+  --color-border: rgba(150, 170, 185, 0.22);
+  --color-input: rgba(150, 170, 185, 0.22);
+  --color-ring: #66d3b2;
+
+  --color-sidebar: #0c1318;
+  --color-sidebar-foreground: #b7c3cb;
+  --color-sidebar-primary: #66d3b2;
+  --color-sidebar-primary-foreground: #021014;
+  --color-sidebar-accent: #17232d;
+  --color-sidebar-accent-foreground: #e9f1f5;
+  --color-sidebar-border: rgba(150, 170, 185, 0.22);
+  --color-sidebar-ring: #66d3b2;
+
+  /* Status semantic colors */
+  --color-status-healthy: #6ce0bd;
+  --color-status-recovering: #f9ce79;
+  --color-status-degraded: #ff9999;
+  --color-status-ready: #6ce0bd;
+  --color-status-inprogress: #f9ce79;
+  --color-status-notconfigured: #c5d0d8;
+
+  /* Surface hierarchy */
+  --color-surface-soft: #0d1419;
+  --color-surface-mid: #121c23;
+  --color-surface-strong: #17232d;
+
+  --radius-lg: 0.75rem;
+  --radius-md: 0.625rem;
+  --radius-sm: 0.5rem;
+
+  /* Typography */
+  --font-sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+}
+
+/* Legacy CSS variable aliases (for gradual migration) */
 :root {
   --bg-base: #090f13;
   --surface-soft: #0d1419;
@@ -27,9 +91,10 @@ body,
 }
 
 body {
-  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  font-family: var(--font-sans);
   line-height: 1.45;
-  background: var(--bg-base);
+  background: var(--color-background);
+  color: var(--color-foreground);
 }
 
 button,
