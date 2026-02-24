@@ -9,7 +9,6 @@ interface TelegramGuideProps {
   guide: GuideState
   steps: GuideStep[]
   checkPending: boolean
-  onAutoCheck: () => void
   onMoveStep: (direction: 'next' | 'prev') => void
   onStepClick: (index: number) => void
   onTokenChange: (value: string) => void
@@ -19,7 +18,6 @@ export function TelegramGuide({
   guide,
   steps,
   checkPending,
-  onAutoCheck,
   onMoveStep,
   onStepClick,
   onTokenChange,
@@ -95,20 +93,10 @@ export function TelegramGuide({
           )}
           aria-live="polite"
         >
-          {guide.lastCheckMessage || '点击"自动检查"后，检查通过即可继续。'}
+          {guide.lastCheckMessage || '点击"继续"后，系统会自动检查并进入下一步。'}
         </div>
 
         <div className="mt-auto flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={checkPending}
-            onClick={onAutoCheck}
-            className="text-xs"
-          >
-            {checkPending ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
-            {checkPending ? '检查中...' : '自动检查'}
-          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -121,11 +109,21 @@ export function TelegramGuide({
           </Button>
           <Button
             size="sm"
+            disabled={checkPending}
             onClick={() => onMoveStep('next')}
             className="text-xs"
           >
-            {guide.currentStep === steps.length - 1 ? '完成' : '继续'}
-            {guide.currentStep < steps.length - 1 && <ChevronRight className="ml-1 h-3 w-3" />}
+            {checkPending ? (
+              <>
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                检查中...
+              </>
+            ) : (
+              <>
+                {guide.currentStep === steps.length - 1 ? '完成' : '继续'}
+                {guide.currentStep < steps.length - 1 && <ChevronRight className="ml-1 h-3 w-3" />}
+              </>
+            )}
           </Button>
         </div>
       </div>

@@ -2,7 +2,7 @@ import type { AgentChatResult } from './api/openclaw'
 
 export type AgentId = string
 export type TelegramStatus = 'NotConfigured' | 'InProgress' | 'Ready' | 'Degraded'
-export type TabKey = 'basic' | 'telegram' | 'advanced'
+export type TabKey = 'basic' | 'telegram'
 export type ChatMessage = { role: 'user' | 'assistant'; text: string }
 export type ChatDiagnostics = NonNullable<AgentChatResult['diagnostics']>
 
@@ -42,3 +42,6 @@ export interface GuideState {
   tokenInput: string
   lastCheckMessage: string
 }
+
+export type AutomationTaskStatus = 'running' | 'paused' | 'stopped'
+export type IntervalUnit = 'minutes' | 'hours'

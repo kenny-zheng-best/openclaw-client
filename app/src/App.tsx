@@ -5,7 +5,9 @@ import {
   checkLocalApiHealth,
   createAgent as createAgentRequest,
   listAgents,
+  openLocalPath,
   sendAgentMessage,
+  updateAgent,
   verifyTelegramToken,
   type AgentSummary,
 } from './api/openclaw'
@@ -30,7 +32,7 @@ const GUIDE_STEPS = [
   { id: 'S2_CREATE_BOT' as const, title: 'S2 创建 Bot', summary: '给 BotFather 发送 /newbot，根据提示填写机器人名称。', screenshotTitle: '/newbot 操作', screenshotHint: '截图示意如何发送 /newbot。' },
   { id: 'S3_SET_USERNAME' as const, title: 'S3 设置用户名', summary: '设置用户名，必须以 bot 结尾，例如 openclaw_helper_bot。', screenshotTitle: '用户名规则', screenshotHint: '截图示意用户名格式要求。' },
   { id: 'S4_PASTE_TOKEN' as const, title: 'S4 粘贴 Token', summary: '将 BotFather 返回的 Token 粘贴到下方输入框。', screenshotTitle: 'Token 位置', screenshotHint: '截图示意复制 Token 的位置。' },
-  { id: 'S5_VERIFY_TOKEN' as const, title: 'S5 验证 Token', summary: '点击自动检查，调用 Telegram getMe 验证 token 可用性。', screenshotTitle: '验证成功示意', screenshotHint: '截图示意验证成功后展示 bot 信息。' },
+  { id: 'S5_VERIFY_TOKEN' as const, title: 'S5 验证 Token', summary: '点击继续后自动调用 Telegram getMe 验证 token 可用性。', screenshotTitle: '验证成功示意', screenshotHint: '截图示意验证成功后展示 bot 信息。' },
   { id: 'S6_APPLY_CONFIG' as const, title: 'S6 应用配置', summary: '把 Telegram 配置应用到当前 Agent（热加载优先，失败自动重启）。', screenshotTitle: '配置应用策略', screenshotHint: '示意热加载失败后自动重启流程。' },
   { id: 'S7_PROBE_CHANNEL' as const, title: 'S7 通道探测', summary: '检查 Telegram 通道是否 ready。', screenshotTitle: '通道探测结果', screenshotHint: '展示 ready / degraded 结果卡片。' },
   { id: 'S8_WAIT_FIRST_DM' as const, title: 'S8 发送首条消息', summary: '到 Telegram 给 bot 发送首条消息，系统等待 pairing 请求。', screenshotTitle: '首条 DM 操作', screenshotHint: '截图示意用户在 Telegram 发首条消息。' },
@@ -225,6 +227,21 @@ function App() {
     }
   }
 
+  const handleRenameAgent = async (name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) {
+      throw new Error('Agent 名称不能为空。')
+    }
+
+    const updated = await updateAgent(selectedAgent, trimmed)
+    const next = toAgentMeta(updated)
+    setAgents((prev) => prev.map((agent) => (agent.id === next.id ? { ...agent, name: next.name } : agent)))
+  }
+
+  const handleOpenWorkspace = async () => {
+    await openLocalPath(currentAgentMeta.workspace)
+  }
+
   const handleSendMessage = async () => {
     const trimmed = draftMessage.trim()
     if (!trimmed || currentChatPending) return
@@ -253,8 +270,7 @@ function App() {
 
   const tokenPattern = /^\d{6,}:[A-Za-z0-9_-]{20,}$/
 
-  const runAutoCheck = async () => {
-    const agentId = selectedAgent
+  const runAutoCheck = async (agentId = selectedAgent) => {
     const guide = guides[agentId] ?? createGuideState()
     const step = GUIDE_STEPS[guide.currentStep]
     let ok = true
@@ -294,14 +310,39 @@ function App() {
       checks[prev.currentStep] = ok
       return { ...prev, checks, lastCheckMessage: message }
     })
+
+    return ok
   }
 
-  const moveStep = (direction: 'next' | 'prev') => {
-    updateGuide(selectedAgent, (prev) => {
-      if (direction === 'prev') return { ...prev, currentStep: Math.max(0, prev.currentStep - 1), lastCheckMessage: '' }
-      if (!prev.checks[prev.currentStep]) return { ...prev, lastCheckMessage: '请先点击"自动检查"，检查通过后再继续。' }
-      if (prev.currentStep === GUIDE_STEPS.length - 1) return { ...prev, open: false }
-      return { ...prev, currentStep: Math.min(GUIDE_STEPS.length - 1, prev.currentStep + 1), lastCheckMessage: '' }
+  const moveStep = async (direction: 'next' | 'prev') => {
+    const agentId = selectedAgent
+    if (direction === 'prev') {
+      updateGuide(agentId, (prev) => ({
+        ...prev,
+        currentStep: Math.max(0, prev.currentStep - 1),
+        lastCheckMessage: '',
+      }))
+      return
+    }
+
+    if (guideCheckPendingByAgent[agentId]) {
+      return
+    }
+
+    const passed = await runAutoCheck(agentId)
+    if (!passed) {
+      return
+    }
+
+    updateGuide(agentId, (prev) => {
+      if (prev.currentStep === GUIDE_STEPS.length - 1) {
+        return { ...prev, open: false }
+      }
+      return {
+        ...prev,
+        currentStep: Math.min(GUIDE_STEPS.length - 1, prev.currentStep + 1),
+        lastCheckMessage: '',
+      }
     })
   }
 
@@ -321,7 +362,7 @@ function App() {
         onToggleAgentExpanded={() => setAgentExpanded((prev) => !prev)}
         onCreateAgent={() => void handleCreateAgent()}
         createAgentPending={createAgentPending}
-        onOpenGlobalSettings={() => { setSettingsScope('global'); setActiveTab('advanced'); setDrawerOpen(true) }}
+        onOpenGlobalSettings={() => { setSettingsScope('global'); setActiveTab('basic'); setDrawerOpen(true) }}
       />
 
       <main className="flex flex-1 p-4">
@@ -344,7 +385,7 @@ function App() {
             onOpenSettings={() => { setSettingsScope('agent'); setDrawerOpen(true) }}
           />
         ) : (
-          <ModulePanel section={section} />
+          <ModulePanel section={section} selectedAgent={selectedAgent} />
         )}
       </main>
 
@@ -368,8 +409,7 @@ function App() {
           updateGuide(selectedAgent, () => ({ ...createGuideState(), open: true }))
           setTelegramStatus((prev) => ({ ...prev, [selectedAgent]: 'NotConfigured' }))
         }}
-        onAutoCheck={() => void runAutoCheck()}
-        onMoveStep={moveStep}
+        onMoveStep={(direction) => void moveStep(direction)}
         onStepClick={(index) => updateGuide(selectedAgent, (prev) => ({ ...prev, currentStep: index, lastCheckMessage: '' }))}
         onTokenChange={(value) => updateGuide(selectedAgent, (prev) => ({
           ...prev,
@@ -377,6 +417,8 @@ function App() {
           checks: prev.checks.map((v, idx) => idx === prev.currentStep ? false : v),
           lastCheckMessage: '',
         }))}
+        onRenameAgent={handleRenameAgent}
+        onOpenWorkspace={handleOpenWorkspace}
       />
     </div>
   )

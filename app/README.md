@@ -1,73 +1,100 @@
-# React + TypeScript + Vite
+# OpenClaw Client Demo
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+本项目是 OpenClaw macOS 客户端的前端 Demo（React + Vite），当前已打通“本地 API 服务 -> OpenClaw CLI -> 聊天回显”的最小真实链路。
 
-Currently, two official plugins are available:
+## 运行方式
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+1. 启动本地 API 服务
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+pnpm api
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+默认监听：`http://localhost:8787`
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+默认模式：`openclaw_cli`（需要本机已安装 `openclaw` 并可在终端执行）。
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+工作目录根路径默认：`~/.openclaw-client/workspaces`
+
+`openclaw_cli` 默认单次 turn 超时为 45 秒，可通过环境变量调整：
+
+```bash
+OPENCLAW_AGENT_TIMEOUT_SECONDS=30 pnpm api
 ```
+
+如果你想切到直连模型（OpenAI 兼容）模式：
+
+```bash
+MINIMAX_API_KEY="你的key" \
+MINIMAX_BASE_URL="https://api.minimaxi.com/v1" \
+MINIMAX_MODEL="MiniMax-M2.5" \
+OPENCLAW_CHAT_MODE="openai_compat" \
+pnpm api
+```
+
+说明：
+- 设置 `MINIMAX_API_KEY` 后会自动切到 `openai_compat` 模式。
+- 也兼容旧变量：`OPENCLAW_MODEL_BASE_URL / OPENCLAW_MODEL_API_KEY / OPENCLAW_MODEL_NAME`。
+
+2. 启动前端
+
+```bash
+pnpm dev --host 0.0.0.0 --port 4173
+```
+
+默认访问：`http://localhost:4173`
+
+## 已打通的真实链路
+
+- `POST /v1/agents/:agentId/chat`：发送消息并返回回复
+- `GET /health`：本地 API 健康检查
+- `1 Agent = 1 Gateway`：服务端默认按 agent 维度绑定 gateway
+- 聊天模式：
+  - `openclaw_cli`（默认）：调用本机 OpenClaw 运行 Agent 回合
+  - `mock`：返回回显消息
+  - `openai_compat`：调用真实模型接口
+- 每个 agent 自动创建独立目录与基础文件：
+  - `~/.openclaw-client/workspaces/<agentId>/SOUL.md`
+  - `~/.openclaw-client/workspaces/<agentId>/AGENTS.md`
+  - `~/.openclaw-client/workspaces/<agentId>/TOOLS.md`
+  - `~/.openclaw-client/workspaces/<agentId>/USER.md`
+  - `~/.openclaw-client/workspaces/<agentId>/IDENTITY.md`
+  - 兼容迁移：若仅存在旧文件 `soul.md/agent.md/tool.md`，会自动复制内容到新文件名（不删除旧文件）
+- 网关状态模拟：
+  - `POST /v1/gateways/:gatewayId/disconnect`
+  - `POST /v1/gateways/:gatewayId/recover`
+
+## 验证命令
+
+```bash
+pnpm test
+pnpm build
+pnpm smoke:e2e
+```
+
+一键完整交付验证：
+
+```bash
+pnpm verify:delivery
+```
+
+执行后会自动进行：
+- 单元测试
+- 构建检查
+- Playwright 端到端冒烟（自动启动 API/前端，如未运行）
+
+产物路径：
+- `output/playwright/e2e-chat/report.json`
+- `output/playwright/e2e-chat/chat-success-*.png`
+
+## 故障排查（openclaw_cli 模式）
+
+如果聊天报超时或网关不可用，先在终端确认 OpenClaw 本机链路：
+
+```bash
+openclaw tui
+# 或
+openclaw doctor
+```
+
+再重新启动 API 与前端。
