@@ -208,6 +208,74 @@ const run = async () => {
       }
     }
 
+    const skillsAssertion = createAssertion('skills list returns array')
+    {
+      const response = await fetch(`${qaBaseUrl}/v1/skills`)
+      const payload = await response.json()
+      const skills = payload?.data?.skills
+      const summary = payload?.data?.summary
+      skillsAssertion.ok =
+        response.ok &&
+        payload?.ok === true &&
+        Array.isArray(skills) &&
+        typeof summary?.total === 'number' &&
+        typeof summary?.eligible === 'number'
+      skillsAssertion.detail = JSON.stringify({
+        status: response.status,
+        total: summary?.total,
+        eligible: summary?.eligible,
+        sampleName: skills?.[0]?.name ?? '',
+      })
+      report.assertions.push(skillsAssertion)
+      if (!skillsAssertion.ok) {
+        throw new Error(`QA_ASSERT_FAIL: ${skillsAssertion.name}`)
+      }
+    }
+
+    const installDepsValidationAssertion = createAssertion('install-deps rejects empty packages')
+    {
+      const response = await fetch(`${qaBaseUrl}/v1/system/install-deps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packages: [] }),
+      })
+      const payload = await response.json()
+      installDepsValidationAssertion.ok =
+        response.status === 400 &&
+        payload?.ok === false &&
+        payload?.error?.code === 'INVALID_PACKAGES'
+      installDepsValidationAssertion.detail = JSON.stringify({
+        status: response.status,
+        code: payload?.error?.code,
+      })
+      report.assertions.push(installDepsValidationAssertion)
+      if (!installDepsValidationAssertion.ok) {
+        throw new Error(`QA_ASSERT_FAIL: ${installDepsValidationAssertion.name}`)
+      }
+    }
+
+    const installDepsNameAssertion = createAssertion('install-deps rejects invalid package name')
+    {
+      const response = await fetch(`${qaBaseUrl}/v1/system/install-deps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packages: ['$(rm -rf /)'] }),
+      })
+      const payload = await response.json()
+      installDepsNameAssertion.ok =
+        response.status === 400 &&
+        payload?.ok === false &&
+        payload?.error?.code === 'INVALID_PACKAGE_NAME'
+      installDepsNameAssertion.detail = JSON.stringify({
+        status: response.status,
+        code: payload?.error?.code,
+      })
+      report.assertions.push(installDepsNameAssertion)
+      if (!installDepsNameAssertion.ok) {
+        throw new Error(`QA_ASSERT_FAIL: ${installDepsNameAssertion.name}`)
+      }
+    }
+
     report.status = 'pass'
   } catch (error) {
     report.status = 'fail'

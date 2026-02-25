@@ -1,12 +1,19 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 const PORT = Number(process.env.OPENCLAW_LOCAL_API_PORT ?? 8787)
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN ?? 'openclaw'
+
+// Ensure user-local npm global bin is on PATH so openclaw CLI can find npm-installed binaries
+const NPM_USER_PREFIX = join(homedir(), '.npm-global')
+const NPM_USER_BIN = join(NPM_USER_PREFIX, 'bin')
+if (!process.env.PATH?.includes(NPM_USER_BIN)) {
+  process.env.PATH = `${NPM_USER_BIN}:${process.env.PATH}`
+}
 const OPENCLAW_CLIENT_ROOT = process.env.OPENCLAW_CLIENT_ROOT ?? join(homedir(), '.openclaw-client')
 const WORKSPACE_ROOT = process.env.OPENCLAW_WORKSPACE_ROOT ?? join(homedir(), '.openclaw-client', 'workspaces')
 const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json')
@@ -101,8 +108,11 @@ const telegramAgentStates = new Map()
 const stripAnsi = (input) => input.replace(/\u001b\[[0-9;]*m/g, '')
 
 const sanitizeAssistantText = (input) => {
-  const withoutThinking = input.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
-  return withoutThinking || '收到。'
+  const cleaned = input
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+    .replace(/<think(?:ing)?>[\s\S]*$/gi, '')
+    .trim()
+  return cleaned || '收到。'
 }
 
 const setCorsHeaders = (res) => {
@@ -1143,6 +1153,70 @@ const verifyTelegramToken = async (token) => {
   }
 }
 
+const callTelegramMethod = async (token, method, params = null) => {
+  const trimmedToken = typeof token === 'string' ? token.trim() : ''
+  if (!tokenPattern.test(trimmedToken)) {
+    throw new Error('TELEGRAM_TOKEN_FORMAT_INVALID')
+  }
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), TELEGRAM_VERIFY_TIMEOUT_MS)
+
+  try {
+    const url = `${TELEGRAM_API_BASE_URL.replace(/\/+$/, '')}/bot${trimmedToken}/${method}`
+    const response = await fetch(url, {
+      method: params ? 'POST' : 'GET',
+      headers: params ? { 'Content-Type': 'application/json' } : undefined,
+      body: params ? JSON.stringify(params) : undefined,
+      signal: controller.signal,
+    })
+    const payload = await response.json().catch(() => null)
+
+    if (!response.ok) {
+      const detail = typeof payload?.description === 'string' ? payload.description : `HTTP_${response.status}`
+      throw new Error(`TELEGRAM_HTTP_ERROR:${method}:${detail}`)
+    }
+
+    if (!payload || payload.ok !== true) {
+      const detail = typeof payload?.description === 'string' ? payload.description : 'UNKNOWN_TELEGRAM_ERROR'
+      throw new Error(`TELEGRAM_API_ERROR:${method}:${detail}`)
+    }
+
+    return payload.result
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('TELEGRAM_VERIFY_TIMEOUT')
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+const getTelegramStateWithToken = (agentId) => {
+  const state = telegramAgentStates.get(agentId)
+  if (!state || !isNonEmptyString(state.token)) {
+    throw new Error('TELEGRAM_TOKEN_NOT_CONFIGURED')
+  }
+  return state
+}
+
+const buildNextTelegramState = (prevState, token, bot) => {
+  const tokenChanged = !prevState || prevState.token !== token
+  const next = {
+    ...(prevState ?? {}),
+    token,
+    bot,
+    lastVerifiedAt: new Date().toISOString(),
+  }
+  if (tokenChanged) {
+    delete next.lastUpdateId
+    delete next.pendingPairing
+    delete next.approvedPairing
+  }
+  return next
+}
+
 const ensureOpenClawAgentRegistered = async (agent) => {
   if (knownOpenClawAgentIds.has(agent.id)) {
     return
@@ -1524,6 +1598,31 @@ const parseAgentTelegramVerifyPath = (pathname) => {
   return match ? decodeURIComponent(match[1]) : null
 }
 
+const parseAgentTelegramApplyConfigPath = (pathname) => {
+  const match = pathname.match(/^\/v1\/agents\/([^/]+)\/telegram\/apply-config$/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+const parseAgentTelegramProbeChannelPath = (pathname) => {
+  const match = pathname.match(/^\/v1\/agents\/([^/]+)\/telegram\/probe-channel$/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+const parseAgentTelegramProbeFirstDmPath = (pathname) => {
+  const match = pathname.match(/^\/v1\/agents\/([^/]+)\/telegram\/probe-first-dm$/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+const parseAgentTelegramApprovePairingPath = (pathname) => {
+  const match = pathname.match(/^\/v1\/agents\/([^/]+)\/telegram\/approve-pairing$/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+const parseAgentTelegramLoopbackPath = (pathname) => {
+  const match = pathname.match(/^\/v1\/agents\/([^/]+)\/telegram\/loopback-test$/)
+  return match ? decodeURIComponent(match[1]) : null
+}
+
 const parseGatewayActionPath = (pathname) => {
   const match = pathname.match(/^\/v1\/gateways\/([^/]+)\/(disconnect|recover)$/)
   return match
@@ -1734,11 +1833,332 @@ const server = createServer(async (req, res) => {
         return
       }
 
+      const previous = telegramAgentStates.get(agent.id)
+      telegramAgentStates.set(agent.id, buildNextTelegramState(previous, token, bot))
+      await queuePersistTelegramAgentStates()
+
       writeJson(res, 200, {
         ok: true,
         data: {
           agentId: agent.id,
           bot,
+        },
+      })
+      return
+    } catch {
+      routeError(res, 'INVALID_JSON', '请求体 JSON 格式错误')
+      return
+    }
+  }
+
+  const telegramApplyConfigAgentId = parseAgentTelegramApplyConfigPath(requestUrl.pathname)
+  if (req.method === 'POST' && telegramApplyConfigAgentId) {
+    try {
+      const body = await readJsonBody(req)
+      const agent = await ensureAgent(telegramApplyConfigAgentId)
+      const existingState = telegramAgentStates.get(agent.id)
+      const providedToken = typeof body.token === 'string' ? body.token.trim() : ''
+      const token = providedToken || existingState?.token || ''
+      if (!token) {
+        routeError(res, 'TELEGRAM_NOT_CONFIGURED', '未找到可用 token，请先完成 S4/S5')
+        return
+      }
+
+      let bot = null
+      try {
+        bot = await verifyTelegramToken(token)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      const nextState = buildNextTelegramState(existingState, token, bot)
+      telegramAgentStates.set(agent.id, nextState)
+      await queuePersistTelegramAgentStates()
+
+      writeJson(res, 200, {
+        ok: true,
+        data: {
+          agentId: agent.id,
+          tokenMasked: maskTelegramToken(token),
+          bot,
+          strategy: 'stored_local',
+          appliedAt: new Date().toISOString(),
+        },
+      })
+      return
+    } catch {
+      routeError(res, 'INVALID_JSON', '请求体 JSON 格式错误')
+      return
+    }
+  }
+
+  const telegramProbeChannelAgentId = parseAgentTelegramProbeChannelPath(requestUrl.pathname)
+  if (req.method === 'POST' && telegramProbeChannelAgentId) {
+    try {
+      const agent = await ensureAgent(telegramProbeChannelAgentId)
+      let state = null
+      try {
+        state = getTelegramStateWithToken(agent.id)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      let bot = null
+      try {
+        bot = await verifyTelegramToken(state.token)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      const nextState = buildNextTelegramState(state, state.token, bot)
+      telegramAgentStates.set(agent.id, nextState)
+      await queuePersistTelegramAgentStates()
+
+      const status = nextState.approvedPairing?.chatId ? 'ready' : 'waiting_pairing'
+      writeJson(res, 200, {
+        ok: true,
+        data: {
+          agentId: agent.id,
+          status,
+          bot,
+          message:
+            status === 'ready'
+              ? 'Telegram 通道可用，已完成 pairing。'
+              : 'Telegram 通道可用，等待首条 DM 触发 pairing。',
+        },
+      })
+      return
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+      const mapped = classifyTelegramFailure(reason)
+      routeError(res, mapped.code, mapped.message, mapped.status)
+      return
+    }
+  }
+
+  const telegramProbeFirstDmAgentId = parseAgentTelegramProbeFirstDmPath(requestUrl.pathname)
+  if (req.method === 'POST' && telegramProbeFirstDmAgentId) {
+    try {
+      const agent = await ensureAgent(telegramProbeFirstDmAgentId)
+      let state = null
+      try {
+        state = getTelegramStateWithToken(agent.id)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      const params = {
+        timeout: 0,
+        limit: 30,
+        allowed_updates: ['message'],
+      }
+      if (typeof state.lastUpdateId === 'number' && Number.isFinite(state.lastUpdateId)) {
+        params.offset = state.lastUpdateId + 1
+      }
+
+      let updates = []
+      try {
+        const result = await callTelegramMethod(state.token, 'getUpdates', params)
+        updates = Array.isArray(result) ? result : []
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      let nextUpdateId = typeof state.lastUpdateId === 'number' && Number.isFinite(state.lastUpdateId) ? state.lastUpdateId : 0
+      let pendingPairing = state.pendingPairing
+
+      for (const update of updates) {
+        if (!update || typeof update !== 'object') {
+          continue
+        }
+
+        const updateId = typeof update.update_id === 'number' ? update.update_id : null
+        if (updateId !== null && updateId > nextUpdateId) {
+          nextUpdateId = updateId
+        }
+
+        const message = update.message
+        if (!message || typeof message !== 'object') {
+          continue
+        }
+        const chat = message.chat
+        const from = message.from
+        if (!chat || typeof chat !== 'object' || chat.type !== 'private') {
+          continue
+        }
+        if (!from || typeof from !== 'object' || from.is_bot === true) {
+          continue
+        }
+
+        const text = typeof message.text === 'string' ? message.text.trim() : ''
+        pendingPairing = {
+          chatId: String(chat.id ?? ''),
+          userId: String(from.id ?? ''),
+          username: typeof from.username === 'string' ? from.username : '',
+          firstName: typeof from.first_name === 'string' ? from.first_name : '',
+          text,
+          detectedAt: new Date().toISOString(),
+          updateId: updateId ?? 0,
+        }
+      }
+
+      const nextState = { ...state }
+      if (nextUpdateId > 0) {
+        nextState.lastUpdateId = nextUpdateId
+      }
+      if (pendingPairing?.chatId) {
+        nextState.pendingPairing = pendingPairing
+      }
+      telegramAgentStates.set(agent.id, nextState)
+      await queuePersistTelegramAgentStates()
+
+      const found = Boolean(pendingPairing?.chatId)
+      writeJson(res, 200, {
+        ok: true,
+        data: {
+          agentId: agent.id,
+          found,
+          pendingPairing: found ? pendingPairing : undefined,
+          message: found
+            ? `检测到来自 @${pendingPairing.username || pendingPairing.firstName || pendingPairing.userId} 的首条私信。`
+            : '暂未检测到首条私信，请先在 Telegram 给 bot 发送消息后重试。',
+        },
+      })
+      return
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+      const mapped = classifyTelegramFailure(reason)
+      routeError(res, mapped.code, mapped.message, mapped.status)
+      return
+    }
+  }
+
+  const telegramApprovePairingAgentId = parseAgentTelegramApprovePairingPath(requestUrl.pathname)
+  if (req.method === 'POST' && telegramApprovePairingAgentId) {
+    try {
+      const agent = await ensureAgent(telegramApprovePairingAgentId)
+      let state = null
+      try {
+        state = getTelegramStateWithToken(agent.id)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      const pendingPairing = state.pendingPairing
+      if (!pendingPairing?.chatId) {
+        const mapped = classifyTelegramFailure('TELEGRAM_PENDING_PAIRING_NOT_FOUND')
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      const approvedPairing = {
+        chatId: pendingPairing.chatId,
+        userId: pendingPairing.userId,
+        username: pendingPairing.username || undefined,
+        firstName: pendingPairing.firstName || undefined,
+        approvedAt: new Date().toISOString(),
+      }
+
+      const nextState = {
+        ...state,
+        approvedPairing,
+      }
+      delete nextState.pendingPairing
+      telegramAgentStates.set(agent.id, nextState)
+      await queuePersistTelegramAgentStates()
+
+      let noticeSent = false
+      try {
+        await callTelegramMethod(state.token, 'sendMessage', {
+          chat_id: approvedPairing.chatId,
+          text: `✅ ${agent.name} 已完成绑定，现在可以直接聊天。`,
+        })
+        noticeSent = true
+      } catch {
+        // Pairing approval should not fail because of a best-effort notice message.
+      }
+
+      writeJson(res, 200, {
+        ok: true,
+        data: {
+          agentId: agent.id,
+          approvedPairing,
+          noticeSent,
+          message: noticeSent ? 'Pairing 已批准，并已发送确认消息。' : 'Pairing 已批准。',
+        },
+      })
+      return
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+      const mapped = classifyTelegramFailure(reason)
+      routeError(res, mapped.code, mapped.message, mapped.status)
+      return
+    }
+  }
+
+  const telegramLoopbackAgentId = parseAgentTelegramLoopbackPath(requestUrl.pathname)
+  if (req.method === 'POST' && telegramLoopbackAgentId) {
+    try {
+      const body = await readJsonBody(req)
+      const agent = await ensureAgent(telegramLoopbackAgentId)
+      let state = null
+      try {
+        state = getTelegramStateWithToken(agent.id)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      if (!state.approvedPairing?.chatId) {
+        const mapped = classifyTelegramFailure('TELEGRAM_APPROVED_PAIRING_NOT_FOUND')
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      const testMessageRaw = typeof body.message === 'string' ? body.message.trim() : ''
+      const testMessage = testMessageRaw || `OpenClaw Client 回环测试通过（${agent.name}）`
+
+      let sendResult = null
+      try {
+        sendResult = await callTelegramMethod(state.token, 'sendMessage', {
+          chat_id: state.approvedPairing.chatId,
+          text: testMessage,
+        })
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'TELEGRAM_VERIFY_FAILED'
+        const mapped = classifyTelegramFailure(reason)
+        routeError(res, mapped.code, mapped.message, mapped.status)
+        return
+      }
+
+      writeJson(res, 200, {
+        ok: true,
+        data: {
+          agentId: agent.id,
+          chatId: state.approvedPairing.chatId,
+          messageId: sendResult?.message_id != null ? String(sendResult.message_id) : '',
+          deliveredAt: new Date().toISOString(),
+          message: '回环测试消息已发送。',
         },
       })
       return
@@ -2040,6 +2460,172 @@ const server = createServer(async (req, res) => {
     return
   }
 
+  if (req.method === 'POST' && (requestUrl.pathname === '/v1/system/install-deps' || requestUrl.pathname === '/v1/system/brew-install')) {
+    // Known binary → install override (method + package name + optional alias)
+    const INSTALL_OVERRIDES = {
+      op: { method: 'brew', pkg: '1password-cli' },
+      docker: { method: 'brew', pkg: 'docker' },
+      whisper: { method: 'pip', pkg: 'openai-whisper' },
+      clawhub: { method: 'npm', pkg: 'clawdhub', alias: 'clawhub' },
+    }
+
+    const runCmd = (cmd, args, timeoutMs = 120000) =>
+      new Promise((resolve, reject) => {
+        const child = spawn(cmd, args, {
+          env: { ...process.env, HOMEBREW_NO_AUTO_UPDATE: '1' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let stdout = ''
+        let stderr = ''
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM')
+          reject(new Error(`${cmd} ${args[0]} 超时`))
+        }, timeoutMs)
+        child.stdout.on('data', (chunk) => { stdout += String(chunk) })
+        child.stderr.on('data', (chunk) => { stderr += String(chunk) })
+        child.on('close', (code) => {
+          clearTimeout(timer)
+          resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() })
+        })
+        child.on('error', (err) => { clearTimeout(timer); reject(err) })
+      })
+
+    const resolveBrewName = async (binName) => {
+      try {
+        const result = await runCmd('brew', ['which-formula', binName], 10000)
+        if (result.code === 0 && result.stdout) return result.stdout.split('\n')[0].trim()
+      } catch { /* ignore */ }
+      return binName
+    }
+
+    const tryNpmInstall = async (pkg) => {
+      // First try normal npm install -g
+      const r = await runCmd('npm', ['install', '-g', pkg], 120000)
+      const out = [r.stdout, r.stderr].filter(Boolean).join('\n')
+      if (r.code === 0 || out.includes('up to date')) {
+        return { success: true, output: out }
+      }
+      // If EACCES, retry with user-writable prefix (~/.npm-global)
+      if (out.includes('EACCES') || out.includes('permission denied')) {
+        const r2 = await runCmd('npm', ['install', '-g', '--prefix', NPM_USER_PREFIX, pkg], 120000)
+        const out2 = [r2.stdout, r2.stderr].filter(Boolean).join('\n')
+        if (r2.code === 0 || out2.includes('up to date')) {
+          return { success: true, output: out2, userPrefix: true }
+        }
+        return { success: false, output: out2 }
+      }
+      return { success: false, output: out }
+    }
+
+    const tryInstallOne = async (binName) => {
+      // 1. Check if we have a known override
+      const override = INSTALL_OVERRIDES[binName]
+      if (override) {
+        if (override.method === 'npm') {
+          const r = await tryNpmInstall(override.pkg)
+          // If the installed binary differs from expected, create a symlink
+          if (r.success && override.alias && override.alias !== override.pkg) {
+            try {
+              const binDir = r.userPrefix ? join(NPM_USER_PREFIX, 'bin') : (await runCmd('npm', ['prefix', '-g'], 5000)).stdout.trim() + '/bin'
+              const realBin = join(binDir, override.pkg)
+              const aliasBin = join(binDir, override.alias)
+              try { await access(aliasBin) } catch {
+                await symlink(realBin, aliasBin)
+              }
+            } catch { /* symlink failed, non-critical */ }
+          }
+          return { success: r.success, method: 'npm', pkg: override.pkg, output: r.output }
+        }
+        if (override.method === 'pip') {
+          // Try pipx first (safer), fall back to pip3
+          try {
+            const r = await runCmd('pipx', ['install', override.pkg], 120000)
+            const out = [r.stdout, r.stderr].filter(Boolean).join('\n')
+            if (r.code === 0 || out.includes('already installed')) return { success: true, method: 'pipx', pkg: override.pkg, output: out }
+          } catch { /* pipx not available, try pip3 */ }
+          const r = await runCmd('pip3', ['install', override.pkg], 120000)
+          const out = [r.stdout, r.stderr].filter(Boolean).join('\n')
+          return { success: r.code === 0 || out.includes('already satisfied'), method: 'pip', pkg: override.pkg, output: out }
+        }
+        // override.method === 'brew'
+        const r = await runCmd('brew', ['install', override.pkg], 120000)
+        const out = [r.stdout, r.stderr].filter(Boolean).join('\n')
+        return { success: r.code === 0 || out.includes('already installed'), method: 'brew', pkg: override.pkg, output: out }
+      }
+
+      // 2. Try brew (with formula resolution)
+      const brewPkg = await resolveBrewName(binName)
+      const brewResult = await runCmd('brew', ['install', brewPkg], 120000)
+      const brewOut = [brewResult.stdout, brewResult.stderr].filter(Boolean).join('\n')
+      if (brewResult.code === 0 || brewOut.includes('already installed')) {
+        return { success: true, method: 'brew', pkg: brewPkg, output: brewOut }
+      }
+      const brewNotFound = brewOut.includes('No available formula') || brewOut.includes('No formulae or casks found')
+      if (!brewNotFound) {
+        return { success: false, method: 'brew', pkg: brewPkg, output: brewOut }
+      }
+
+      // 3. Try npm install -g (with EACCES fallback)
+      try {
+        const npmResult = await tryNpmInstall(binName)
+        if (npmResult.success) {
+          return { success: true, method: 'npm', pkg: binName, output: npmResult.output }
+        }
+      } catch { /* npm failed or not available */ }
+
+      // 4. Try pipx install
+      try {
+        const pipxResult = await runCmd('pipx', ['install', binName], 60000)
+        const pipxOut = [pipxResult.stdout, pipxResult.stderr].filter(Boolean).join('\n')
+        if (pipxResult.code === 0 || pipxOut.includes('already installed')) {
+          return { success: true, method: 'pipx', pkg: binName, output: pipxOut }
+        }
+      } catch { /* pipx failed or not available */ }
+
+      // All methods failed
+      return { success: false, method: 'none', pkg: binName, output: `brew、npm、pipx 均无法安装 ${binName}` }
+    }
+
+    try {
+      const body = await readJsonBody(req)
+      const packages = Array.isArray(body.packages) ? body.packages : []
+      if (packages.length === 0) {
+        routeError(res, 'INVALID_PACKAGES', '请指定要安装的包', 400)
+        return
+      }
+      if (packages.length > 5) {
+        routeError(res, 'TOO_MANY_PACKAGES', '单次最多安装 5 个包', 400)
+        return
+      }
+      const validName = /^[a-zA-Z0-9@._\/-]+$/
+      for (const pkg of packages) {
+        if (typeof pkg !== 'string' || !validName.test(pkg)) {
+          routeError(res, 'INVALID_PACKAGE_NAME', `包名不合法: ${pkg}`, 400)
+          return
+        }
+      }
+
+      // Install each package (try brew → npm → pipx)
+      const results = []
+      for (const pkg of packages) {
+        results.push(await tryInstallOne(pkg))
+      }
+
+      const allSuccess = results.every((r) => r.success)
+      const installed = results.filter((r) => r.success).map((r) => r.pkg)
+      const methods = results.map((r) => `${r.pkg} (${r.method})`)
+      const output = results.map((r) => r.output).join('\n---\n')
+
+      writeJson(res, 200, {
+        ok: true,
+        data: { installed, methods, output, success: allSuccess },
+      })
+    } catch (err) {
+      routeError(res, 'INSTALL_DEPS_ERROR', `安装失败: ${err.message}`)
+    }
+    return
+  }
+
   // --- MCP Routes ---
   if (req.method === 'GET' && requestUrl.pathname === '/v1/mcp') {
     writeJson(res, 200, { ok: true, data: Array.from(mcpServers.values()) })
@@ -2278,6 +2864,7 @@ const server = createServer(async (req, res) => {
 
 try {
   await initializeAgentState()
+  await initializeTelegramAgentState()
   await initializeTaskState()
   resumeRunningTasks()
 } catch (error) {

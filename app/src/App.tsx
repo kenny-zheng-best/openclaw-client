@@ -2,10 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { navigateSection, type SectionKey } from './state/navigation'
 import {
   OpenClawApiError,
+  applyTelegramConfig,
+  approveTelegramPairing,
   checkLocalApiHealth,
   createAgent as createAgentRequest,
   listAgents,
   openLocalPath,
+  probeTelegramChannel,
+  probeTelegramFirstDm,
+  runTelegramLoopbackTest,
   sendAgentMessage,
   updateAgent,
   verifyTelegramToken,
@@ -273,6 +278,7 @@ function App() {
   const runAutoCheck = async (agentId = selectedAgent) => {
     const guide = guides[agentId] ?? createGuideState()
     const step = GUIDE_STEPS[guide.currentStep]
+    const targetAgent = agents.find((agent) => agent.id === agentId) ?? currentAgentMeta
     let ok = true
     let message = '检查通过，可以进入下一步。'
 
@@ -297,11 +303,87 @@ function App() {
         }
         break
       }
-      case 'S6_APPLY_CONFIG': setTelegramStatus((prev) => ({ ...prev, [agentId]: 'InProgress' })); message = '已应用配置：热加载成功。'; break
-      case 'S7_PROBE_CHANNEL': setTelegramStatus((prev) => ({ ...prev, [agentId]: 'InProgress' })); message = '通道探测通过，状态 ready。'; break
-      case 'S8_WAIT_FIRST_DM': message = '已检测到首条消息，等待 Pairing 审批。'; break
-      case 'S9_APPROVE_PAIRING': message = 'Pairing 已批准。'; break
-      case 'S10_LOOPBACK_TEST': setTelegramStatus((prev) => ({ ...prev, [agentId]: 'Ready' })); message = '回环测试通过，Telegram 已可用。'; break
+      case 'S6_APPLY_CONFIG': {
+        setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: true }))
+        setTelegramStatus((prev) => ({ ...prev, [agentId]: 'InProgress' }))
+        try {
+          const token = guide.tokenInput.trim()
+          const result = await applyTelegramConfig(agentId, token || undefined)
+          message = `配置已应用（${result.tokenMasked}）。`
+        } catch (error) {
+          ok = false
+          message = error instanceof OpenClawApiError ? error.message : '应用配置失败，请稍后重试。'
+          setTelegramStatus((prev) => ({ ...prev, [agentId]: 'NotConfigured' }))
+        } finally {
+          setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: false }))
+        }
+        break
+      }
+      case 'S7_PROBE_CHANNEL': {
+        setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: true }))
+        try {
+          const result = await probeTelegramChannel(agentId)
+          message = result.message
+          setTelegramStatus((prev) => ({
+            ...prev,
+            [agentId]: result.status === 'ready' ? 'Ready' : result.status === 'degraded' ? 'Degraded' : 'InProgress',
+          }))
+          ok = result.status !== 'degraded'
+        } catch (error) {
+          ok = false
+          message = error instanceof OpenClawApiError ? error.message : '通道探测失败，请稍后重试。'
+          setTelegramStatus((prev) => ({ ...prev, [agentId]: 'Degraded' }))
+        } finally {
+          setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: false }))
+        }
+        break
+      }
+      case 'S8_WAIT_FIRST_DM': {
+        setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: true }))
+        try {
+          const result = await probeTelegramFirstDm(agentId)
+          ok = result.found
+          message = result.message
+          if (ok) {
+            setTelegramStatus((prev) => ({ ...prev, [agentId]: 'InProgress' }))
+          }
+        } catch (error) {
+          ok = false
+          message = error instanceof OpenClawApiError ? error.message : '首条消息检测失败，请稍后重试。'
+        } finally {
+          setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: false }))
+        }
+        break
+      }
+      case 'S9_APPROVE_PAIRING': {
+        setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: true }))
+        try {
+          const result = await approveTelegramPairing(agentId)
+          message = result.message
+          setTelegramStatus((prev) => ({ ...prev, [agentId]: 'InProgress' }))
+        } catch (error) {
+          ok = false
+          message = error instanceof OpenClawApiError ? error.message : 'Pairing 审批失败，请稍后重试。'
+        } finally {
+          setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: false }))
+        }
+        break
+      }
+      case 'S10_LOOPBACK_TEST': {
+        setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: true }))
+        try {
+          const result = await runTelegramLoopbackTest(agentId, `OpenClaw Client 回环测试（${targetAgent.name}）`)
+          message = result.message
+          setTelegramStatus((prev) => ({ ...prev, [agentId]: 'Ready' }))
+        } catch (error) {
+          ok = false
+          message = error instanceof OpenClawApiError ? error.message : '回环测试失败，请稍后重试。'
+          setTelegramStatus((prev) => ({ ...prev, [agentId]: 'Degraded' }))
+        } finally {
+          setGuideCheckPendingByAgent((prev) => ({ ...prev, [agentId]: false }))
+        }
+        break
+      }
       default: break
     }
 

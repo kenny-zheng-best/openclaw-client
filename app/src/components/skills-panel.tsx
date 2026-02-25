@@ -1,11 +1,12 @@
-import { useEffect, useState, useMemo } from 'react'
-import { Loader2, Search, Zap, CheckCircle2, AlertTriangle, Ban, ExternalLink } from 'lucide-react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
+import { Loader2, Search, Zap, CheckCircle2, AlertTriangle, Ban, ExternalLink, Download } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { listSkills, type SkillEntry, type SkillListResponse } from '@/api/openclaw'
+import { listSkills, installDeps, type SkillEntry, type SkillListResponse } from '@/api/openclaw'
 
-type FilterTab = 'all' | 'eligible' | 'missing'
+type FilterTab = 'all' | 'ready' | 'needs-setup'
 
 export function SkillsPanel() {
   const [data, setData] = useState<SkillListResponse | null>(null)
@@ -13,39 +14,71 @@ export function SkillsPanel() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [tab, setTab] = useState<FilterTab>('all')
+  const [installing, setInstalling] = useState<Set<string>>(new Set())
+  const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
 
-  useEffect(() => {
-    let cancelled = false
+  const loadSkills = useCallback(() => {
     setLoading(true)
     setError(null)
     listSkills()
       .then((result) => {
-        if (!cancelled) {
-          setData(result)
-          setLoading(false)
-        }
+        setData(result)
+        setLoading(false)
+        // Clear errors for skills that are now eligible
+        setInstallErrors((prev) => {
+          const next = { ...prev }
+          for (const s of result.skills) {
+            if (s.eligible && next[s.name]) delete next[s.name]
+          }
+          return next
+        })
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : '加载 Skills 列表失败')
-          setLoading(false)
-        }
+        setError(err instanceof Error ? err.message : '加载 Skills 列表失败')
+        setLoading(false)
       })
-    return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    loadSkills()
+  }, [loadSkills])
+
+  const handleInstall = useCallback(async (skillName: string, packages: string[]) => {
+    setInstalling((prev) => new Set(prev).add(skillName))
+    setInstallErrors((prev) => { const next = { ...prev }; delete next[skillName]; return next })
+    try {
+      const result = await installDeps(packages)
+      if (!result.success) {
+        const msg = result.output
+          ? `安装失败: ${result.output.slice(0, 200)}`
+          : `安装失败，请在终端手动安装: ${packages.join(', ')}`
+        setInstallErrors((prev) => ({ ...prev, [skillName]: msg }))
+      }
+      loadSkills()
+    } catch (err: unknown) {
+      setInstallErrors((prev) => ({
+        ...prev,
+        [skillName]: err instanceof Error ? err.message : '安装失败',
+      }))
+    } finally {
+      setInstalling((prev) => {
+        const next = new Set(prev)
+        next.delete(skillName)
+        return next
+      })
+    }
+  }, [loadSkills])
 
   const filtered = useMemo(() => {
     if (!data) return []
     let list = data.skills
 
-    // Filter by tab
-    if (tab === 'eligible') {
+    if (tab === 'ready') {
       list = list.filter((s) => s.eligible && !s.disabled)
-    } else if (tab === 'missing') {
+    } else if (tab === 'needs-setup') {
       list = list.filter((s) => !s.eligible || s.disabled)
     }
 
-    // Filter by search
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       list = list.filter(
@@ -59,17 +92,17 @@ export function SkillsPanel() {
   }, [data, tab, search])
 
   const tabCounts = useMemo(() => {
-    if (!data) return { all: 0, eligible: 0, missing: 0 }
+    if (!data) return { all: 0, ready: 0, needsSetup: 0 }
     return {
       all: data.skills.length,
-      eligible: data.skills.filter((s) => s.eligible && !s.disabled).length,
-      missing: data.skills.filter((s) => !s.eligible || s.disabled).length,
+      ready: data.skills.filter((s) => s.eligible && !s.disabled).length,
+      needsSetup: data.skills.filter((s) => !s.eligible || s.disabled).length,
     }
   }, [data])
 
   // --- Loading / Error ---
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className="flex h-full flex-col rounded-2xl border border-border bg-surface-soft p-6">
         <div className="flex items-center gap-2">
@@ -84,7 +117,7 @@ export function SkillsPanel() {
     )
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="flex h-full flex-col rounded-2xl border border-border bg-surface-soft p-6">
         <div className="flex items-center gap-2">
@@ -101,8 +134,8 @@ export function SkillsPanel() {
 
   const tabs: { key: FilterTab; label: string }[] = [
     { key: 'all', label: `全部 (${tabCounts.all})` },
-    { key: 'eligible', label: `可用 (${tabCounts.eligible})` },
-    { key: 'missing', label: `缺少依赖 (${tabCounts.missing})` },
+    { key: 'ready', label: `已就绪 (${tabCounts.ready})` },
+    { key: 'needs-setup', label: `待配置 (${tabCounts.needsSetup})` },
   ]
 
   return (
@@ -113,12 +146,13 @@ export function SkillsPanel() {
         <h2 className="text-lg font-semibold text-foreground">Skills</h2>
         {data && (
           <span className="text-sm text-muted-foreground">
-            {data.summary.eligible}/{data.summary.total} 可用
+            {data.summary.eligible}/{data.summary.total} 已就绪
           </span>
         )}
+        {loading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        OpenClaw 已注册的 Agent Skills（只读）
+        Agent 可使用的能力列表，安装对应工具后自动激活
       </p>
 
       {/* Search */}
@@ -157,7 +191,13 @@ export function SkillsPanel() {
           </p>
         )}
         {filtered.map((skill) => (
-          <SkillCard key={skill.name} skill={skill} />
+          <SkillCard
+            key={skill.name}
+            skill={skill}
+            installing={installing.has(skill.name)}
+            installError={installErrors[skill.name]}
+            onInstall={handleInstall}
+          />
         ))}
       </div>
     </div>
@@ -165,23 +205,84 @@ export function SkillsPanel() {
 }
 
 // ---------------------------------------------------------------------------
+// Human-readable missing dependency hints
+// ---------------------------------------------------------------------------
+
+interface MissingHint {
+  label: string
+  installable: boolean
+  packages?: string[]
+}
+
+function getMissingHints(skill: SkillEntry): MissingHint[] {
+  const hints: MissingHint[] = []
+
+  for (const bin of skill.missing.bins) {
+    hints.push({
+      label: `需要安装 ${bin}`,
+      installable: true,
+      packages: [bin],
+    })
+  }
+
+  if (skill.missing.anyBins.length > 0) {
+    const names = skill.missing.anyBins.join(' 或 ')
+    hints.push({
+      label: `需要安装 ${names} 其中之一`,
+      installable: true,
+      packages: [skill.missing.anyBins[0]],
+    })
+  }
+
+  for (const env of skill.missing.env) {
+    hints.push({
+      label: `需要设置环境变量 ${env}`,
+      installable: false,
+    })
+  }
+
+  for (const cfg of skill.missing.config) {
+    hints.push({
+      label: `需要在配置文件中添加 ${cfg}`,
+      installable: false,
+    })
+  }
+
+  for (const os of skill.missing.os) {
+    const osName = os === 'darwin' ? 'macOS' : os === 'linux' ? 'Linux' : os === 'win32' ? 'Windows' : os
+    hints.push({
+      label: `仅支持 ${osName}`,
+      installable: false,
+    })
+  }
+
+  return hints
+}
+
+function getInstallablePackages(skill: SkillEntry): string[] {
+  const pkgs: string[] = [...skill.missing.bins]
+  if (skill.missing.anyBins.length > 0) {
+    pkgs.push(skill.missing.anyBins[0])
+  }
+  return pkgs
+}
+
+// ---------------------------------------------------------------------------
 // Skill Card
 // ---------------------------------------------------------------------------
 
-function getMissingItems(skill: SkillEntry): string[] {
-  const items: string[] = []
-  if (skill.missing.bins.length > 0) items.push(...skill.missing.bins.map((b) => `bin: ${b}`))
-  if (skill.missing.anyBins.length > 0) items.push(`需要其一: ${skill.missing.anyBins.join(' | ')}`)
-  if (skill.missing.env.length > 0) items.push(...skill.missing.env.map((e) => `env: ${e}`))
-  if (skill.missing.config.length > 0) items.push(...skill.missing.config.map((c) => `config: ${c}`))
-  if (skill.missing.os.length > 0) items.push(...skill.missing.os.map((o) => `os: ${o}`))
-  return items
+interface SkillCardProps {
+  skill: SkillEntry
+  installing: boolean
+  installError?: string
+  onInstall: (skillName: string, packages: string[]) => void
 }
 
-function SkillCard({ skill }: { skill: SkillEntry }) {
-  const isEligible = skill.eligible && !skill.disabled
-  const missingItems = getMissingItems(skill)
-  const hasMissing = missingItems.length > 0
+function SkillCard({ skill, installing, installError, onInstall }: SkillCardProps) {
+  const isReady = skill.eligible && !skill.disabled
+  const hints = getMissingHints(skill)
+  const installablePackages = getInstallablePackages(skill)
+  const canAutoInstall = installablePackages.length > 0
 
   return (
     <Card className="border-border bg-muted/50">
@@ -190,54 +291,74 @@ function SkillCard({ skill }: { skill: SkillEntry }) {
           {skill.emoji && <span className="text-base flex-shrink-0">{skill.emoji}</span>}
           <CardTitle className="text-sm font-medium truncate">{skill.name}</CardTitle>
         </div>
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          {skill.source === 'openclaw-bundled' ? (
-            <Badge variant="secondary" className="text-[10px]">内置</Badge>
-          ) : (
-            <Badge variant="outline" className="text-[10px]">已安装</Badge>
-          )}
+        <div className="flex-shrink-0">
           {skill.disabled ? (
             <Badge variant="secondary" className="gap-0.5 text-[10px]">
               <Ban className="h-3 w-3" />
               已禁用
             </Badge>
-          ) : isEligible ? (
+          ) : isReady ? (
             <Badge variant="default" className="gap-0.5 bg-emerald-600 text-[10px] hover:bg-emerald-600">
               <CheckCircle2 className="h-3 w-3" />
-              可用
+              已就绪
             </Badge>
           ) : (
             <Badge variant="secondary" className="gap-0.5 text-[10px] text-amber-600">
               <AlertTriangle className="h-3 w-3" />
-              缺少依赖
+              待配置
             </Badge>
           )}
         </div>
       </CardHeader>
       <CardContent className="pb-3 pt-0">
         <p className="text-xs text-muted-foreground line-clamp-2">{skill.description}</p>
-        {hasMissing && (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {missingItems.map((item) => (
-              <span
-                key={item}
-                className="inline-block rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600"
-              >
-                {item}
-              </span>
+
+        {hints.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {hints.map((hint) => (
+              <div key={hint.label} className="rounded bg-amber-500/10 px-2 py-1.5">
+                <p className="text-[11px] text-amber-600">{hint.label}</p>
+              </div>
             ))}
           </div>
         )}
-        {skill.homepage && (
-          <a
-            href={skill.homepage}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-          >
-            <ExternalLink className="h-3 w-3" />
-            文档
-          </a>
+
+        <div className="mt-2 flex items-center gap-2">
+          {canAutoInstall && !isReady && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 text-[11px]"
+              disabled={installing}
+              onClick={() => onInstall(skill.name, installablePackages)}
+            >
+              {installing ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  安装中...
+                </>
+              ) : (
+                <>
+                  <Download className="h-3 w-3" />
+                  一键安装
+                </>
+              )}
+            </Button>
+          )}
+          {skill.homepage && (
+            <a
+              href={skill.homepage}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" />
+              查看文档
+            </a>
+          )}
+        </div>
+        {installError && (
+          <p className="mt-1.5 text-[11px] text-destructive">{installError}</p>
         )}
       </CardContent>
     </Card>

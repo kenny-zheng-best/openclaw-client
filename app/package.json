@@ -4,8 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "api": "node server/local-api.mjs",
-    "dev": "vite",
+    "api": "node --watch server/local-api.mjs",
+    "dev": "node --watch server/local-api.mjs & vite --open; kill %1 2>/dev/null",
+    "dev:ui": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "qa:subagent": "node scripts/qa-subagent.mjs",

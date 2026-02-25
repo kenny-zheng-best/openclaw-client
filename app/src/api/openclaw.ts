@@ -40,6 +40,59 @@ export interface TelegramTokenVerifyResult {
   }
 }
 
+export interface TelegramApplyConfigResult {
+  agentId: string
+  tokenMasked: string
+  strategy: string
+  appliedAt: string
+  bot: TelegramTokenVerifyResult['bot']
+}
+
+export interface TelegramPairingCandidate {
+  chatId: string
+  userId: string
+  username: string
+  firstName: string
+  text: string
+  detectedAt: string
+  updateId: number
+}
+
+export interface TelegramProbeChannelResult {
+  agentId: string
+  status: 'ready' | 'waiting_pairing' | 'degraded'
+  message: string
+  bot?: TelegramTokenVerifyResult['bot']
+}
+
+export interface TelegramProbeFirstDmResult {
+  agentId: string
+  found: boolean
+  message: string
+  pendingPairing?: TelegramPairingCandidate
+}
+
+export interface TelegramApprovePairingResult {
+  agentId: string
+  message: string
+  noticeSent: boolean
+  approvedPairing: {
+    chatId: string
+    userId?: string
+    username?: string
+    firstName?: string
+    approvedAt: string
+  }
+}
+
+export interface TelegramLoopbackResult {
+  agentId: string
+  chatId: string
+  messageId: string
+  deliveredAt: string
+  message: string
+}
+
 interface ApiEnvelope<T> {
   ok: boolean
   data?: T
@@ -163,6 +216,97 @@ export async function verifyTelegramToken(agentId: string, token: string): Promi
   return payload.data
 }
 
+export async function applyTelegramConfig(agentId: string, token?: string): Promise<TelegramApplyConfigResult> {
+  const response = await fetch(`${API_BASE}/v1/agents/${encodeURIComponent(agentId)}/telegram/apply-config`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(
+      typeof token === 'string' && token.trim()
+        ? {
+            token,
+          }
+        : {},
+    ),
+  })
+
+  const payload = await parseApiEnvelope<TelegramApplyConfigResult>(response)
+  if (!response.ok || !payload?.ok || !payload.data) {
+    throwApiError(response, payload)
+  }
+  return payload.data
+}
+
+export async function probeTelegramChannel(agentId: string): Promise<TelegramProbeChannelResult> {
+  const response = await fetch(`${API_BASE}/v1/agents/${encodeURIComponent(agentId)}/telegram/probe-channel`, {
+    method: 'POST',
+  })
+
+  const payload = await parseApiEnvelope<TelegramProbeChannelResult>(response)
+  if (!response.ok || !payload?.ok || !payload.data) {
+    throwApiError(response, payload)
+  }
+  return payload.data
+}
+
+export async function probeTelegramFirstDm(agentId: string): Promise<TelegramProbeFirstDmResult> {
+  const response = await fetch(`${API_BASE}/v1/agents/${encodeURIComponent(agentId)}/telegram/probe-first-dm`, {
+    method: 'POST',
+  })
+
+  const payload = await parseApiEnvelope<TelegramProbeFirstDmResult>(response)
+  if (!response.ok || !payload?.ok || !payload.data) {
+    throwApiError(response, payload)
+  }
+  return payload.data
+}
+
+export async function approveTelegramPairing(agentId: string): Promise<TelegramApprovePairingResult> {
+  const response = await fetch(`${API_BASE}/v1/agents/${encodeURIComponent(agentId)}/telegram/approve-pairing`, {
+    method: 'POST',
+  })
+
+  const payload = await parseApiEnvelope<TelegramApprovePairingResult>(response)
+  if (!response.ok || !payload?.ok || !payload.data) {
+    throwApiError(response, payload)
+  }
+  return payload.data
+}
+
+export async function runTelegramLoopbackTest(
+  agentId: string,
+  message?: string,
+): Promise<TelegramLoopbackResult> {
+  const response = await fetch(`${API_BASE}/v1/agents/${encodeURIComponent(agentId)}/telegram/loopback-test`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(
+      typeof message === 'string' && message.trim()
+        ? {
+            message,
+          }
+        : {},
+    ),
+  })
+
+  const payload = await parseApiEnvelope<TelegramLoopbackResult>(response)
+  if (!response.ok || !payload?.ok || !payload.data) {
+    throwApiError(response, payload)
+  }
+  return payload.data
+}
+
+export function stripThinkTags(text: string): string {
+  const cleaned = text
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+    .replace(/<think(?:ing)?>[\s\S]*$/gi, '')
+    .trim()
+  return cleaned || '收到。'
+}
+
 export async function sendAgentMessage(agentId: string, message: string): Promise<AgentChatResult> {
   const response = await fetch(`${API_BASE}/v1/agents/${encodeURIComponent(agentId)}/chat`, {
     method: 'POST',
@@ -180,6 +324,7 @@ export async function sendAgentMessage(agentId: string, message: string): Promis
     throwApiError(response, payload)
   }
 
+  payload.data.reply = stripThinkTags(payload.data.reply)
   return payload.data
 }
 
@@ -270,6 +415,24 @@ export interface SkillListResponse {
 export async function listSkills(): Promise<SkillListResponse> {
   const response = await fetch(`${API_BASE}/v1/skills`)
   const payload = await parseApiEnvelope<SkillListResponse>(response)
+  if (!response.ok || !payload?.ok || !payload.data) { throwApiError(response, payload) }
+  return payload.data
+}
+
+export interface InstallDepsResult {
+  installed: string[]
+  methods?: string[]
+  output: string
+  success: boolean
+}
+
+export async function installDeps(packages: string[]): Promise<InstallDepsResult> {
+  const response = await fetch(`${API_BASE}/v1/system/install-deps`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ packages }),
+  })
+  const payload = await parseApiEnvelope<InstallDepsResult>(response)
   if (!response.ok || !payload?.ok || !payload.data) { throwApiError(response, payload) }
   return payload.data
 }

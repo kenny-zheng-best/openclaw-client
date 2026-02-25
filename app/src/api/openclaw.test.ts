@@ -1,5 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAgent, listAgents, openLocalPath, sendAgentMessage, updateAgent, verifyTelegramToken } from './openclaw'
+import {
+  applyTelegramConfig,
+  approveTelegramPairing,
+  createAgent,
+  listAgents,
+  openLocalPath,
+  probeTelegramChannel,
+  probeTelegramFirstDm,
+  runTelegramLoopbackTest,
+  sendAgentMessage,
+  stripThinkTags,
+  updateAgent,
+  verifyTelegramToken,
+} from './openclaw'
 
 describe('listAgents', () => {
   afterEach(() => {
@@ -267,5 +280,181 @@ describe('sendAgentMessage', () => {
       status: 503,
       code: 'GATEWAY_DISCONNECTED',
     })
+  })
+})
+
+describe('telegram execution apis', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('applies telegram config', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            agentId: 'main',
+            tokenMasked: '123456***ABCD',
+            strategy: 'stored_local',
+            appliedAt: '2026-02-25T00:00:00.000Z',
+            bot: {
+              id: '1',
+              username: 'demo_bot',
+              firstName: 'Demo',
+              canJoinGroups: true,
+              canReadAllGroupMessages: false,
+              supportsInlineQueries: false,
+            },
+          },
+        }),
+      }),
+    )
+
+    const result = await applyTelegramConfig('main', '123456:AAABBBCCCDDDEEEFFF111222333')
+    expect(result.agentId).toBe('main')
+    expect(result.tokenMasked).toContain('***')
+  })
+
+  it('probes telegram channel', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            agentId: 'main',
+            status: 'waiting_pairing',
+            message: 'Telegram 通道可用，等待首条 DM 触发 pairing。',
+          },
+        }),
+      }),
+    )
+
+    const result = await probeTelegramChannel('main')
+    expect(result.status).toBe('waiting_pairing')
+  })
+
+  it('probes first dm and returns candidate', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            agentId: 'main',
+            found: true,
+            message: '检测到首条私信。',
+            pendingPairing: {
+              chatId: '10001',
+              userId: '20001',
+              username: 'demo_user',
+              firstName: 'Demo',
+              text: 'hi',
+              detectedAt: '2026-02-25T00:00:00.000Z',
+              updateId: 123,
+            },
+          },
+        }),
+      }),
+    )
+
+    const result = await probeTelegramFirstDm('main')
+    expect(result.found).toBe(true)
+    expect(result.pendingPairing?.chatId).toBe('10001')
+  })
+
+  it('approves pairing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            agentId: 'main',
+            message: 'Pairing 已批准。',
+            noticeSent: true,
+            approvedPairing: {
+              chatId: '10001',
+              approvedAt: '2026-02-25T00:00:00.000Z',
+            },
+          },
+        }),
+      }),
+    )
+
+    const result = await approveTelegramPairing('main')
+    expect(result.noticeSent).toBe(true)
+    expect(result.approvedPairing.chatId).toBe('10001')
+  })
+
+  it('runs loopback test', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            agentId: 'main',
+            chatId: '10001',
+            messageId: '999',
+            deliveredAt: '2026-02-25T00:00:00.000Z',
+            message: '回环测试消息已发送。',
+          },
+        }),
+      }),
+    )
+
+    const result = await runTelegramLoopbackTest('main')
+    expect(result.messageId).toBe('999')
+  })
+})
+
+describe('stripThinkTags', () => {
+  it('removes closed <think> tags', () => {
+    expect(stripThinkTags('<think>internal reasoning</think>Hello!')).toBe('Hello!')
+  })
+
+  it('removes closed <thinking> tags', () => {
+    expect(stripThinkTags('<thinking>step by step</thinking>Result here')).toBe('Result here')
+  })
+
+  it('removes unclosed <think> tag at end', () => {
+    expect(stripThinkTags('Hello!<think>still thinking...')).toBe('Hello!')
+  })
+
+  it('removes unclosed <thinking> tag at end', () => {
+    expect(stripThinkTags('Answer<thinking>reasoning without close')).toBe('Answer')
+  })
+
+  it('returns text as-is when no think tags', () => {
+    expect(stripThinkTags('Just normal text')).toBe('Just normal text')
+  })
+
+  it('returns fallback when entire content is think tags', () => {
+    expect(stripThinkTags('<think>only internal reasoning</think>')).toBe('收到。')
+  })
+
+  it('preserves content before and after think tags', () => {
+    expect(stripThinkTags('Before<think>hidden</think>After')).toBe('BeforeAfter')
+  })
+
+  it('handles multiple think blocks', () => {
+    expect(stripThinkTags('<think>a</think>Hello<thinking>b</thinking> world')).toBe('Hello world')
+  })
+
+  it('is case-insensitive', () => {
+    expect(stripThinkTags('<THINK>loud</THINK>Quiet')).toBe('Quiet')
   })
 })
