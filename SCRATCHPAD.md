@@ -6,11 +6,17 @@
 
 ## 当前进行中的任务
 
-（暂无，等待下一个任务启动）
+（暂无）
 
 ---
 
 ## 已完成的任务
+
+### think 输出清洗（2026-02-26）
+- [x] 增强后端 `sanitizeAssistantText` — 支持 `<thinking>` 变体 + 未闭合标签
+- [x] 前端 `stripThinkTags` 防御性过滤（openclaw.ts）
+- [x] 9 个测试用例覆盖（openclaw.test.ts）
+- 改动文件：local-api.mjs:110, openclaw.ts:302, openclaw.test.ts
 
 ### M1 阶段
 - [x] 项目脚手架搭建（React + Vite + TypeScript）

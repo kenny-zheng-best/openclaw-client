@@ -19,8 +19,8 @@
 3. `TODO` 统一错误模型
 验收：前端按错误码展示文案（如 `GATEWAY_UNAVAILABLE`、`OPENCLAW_CALL_FAILED`）。
 
-4. `TODO` think 输出清洗
-验收：用户界面不展示 `<think>...</think>` 内容。
+4. `DONE` think 输出清洗
+验收：用户界面不展示 `<think>...</think>` 内容。（后端 sanitizeAssistantText 增强 + 前端 stripThinkTags 防御层 + 9 个测试）
 
 5. `DONE` agent workspace 脚手架稳定化
 验收：新建 agent 后自动有 `SOUL.md/AGENTS.md/TOOLS.md`（并兼容旧 `soul.md/agent.md/tool.md`）。
