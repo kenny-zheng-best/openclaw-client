@@ -69,12 +69,17 @@ jobs:
       - name: QA subagent (API e2e)
         working-directory: app
         run: pnpm qa:subagent
+        timeout-minutes: 3
+        env:
+          OPENCLAW_QA_BOOT_TIMEOUT_MS: "30000"
 
       - name: Smoke E2E (Playwright)
         working-directory: app
         run: pnpm smoke:e2e
+        timeout-minutes: 5
         env:
           OPENCLAW_SMOKE_CHAT_MODE: mock
+          OPENCLAW_SMOKE_BOOT_TIMEOUT_MS: "45000"
 
       - name: Upload E2E artifacts
         if: always()
