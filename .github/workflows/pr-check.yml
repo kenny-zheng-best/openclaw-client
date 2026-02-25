@@ -1,0 +1,46 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize]
+
+jobs:
+  check-pr-description:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for UI changes
+        id: ui-changes
+        run: |
+          FILES=$(git diff --name-only origin/main...HEAD)
+          if echo "$FILES" | grep -qE '\.(tsx|css)$'; then
+            echo "has_ui_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_ui_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require screenshots for UI changes
+        if: steps.ui-changes.outputs.has_ui_changes == 'true'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if echo "$PR_BODY" | grep -qE '!\[.*\]\(.*\.(png|jpg|jpeg|gif|webp)'; then
+            echo "✅ Screenshot found in PR description"
+          elif echo "$PR_BODY" | grep -qE 'https://.*\.(png|jpg|jpeg|gif|webp)'; then
+            echo "✅ Screenshot URL found in PR description"
+          else
+            echo "❌ This PR modifies UI files (.tsx/.css) but no screenshot found in description."
+            echo ""
+            echo "Please add before/after screenshots to the PR description."
+            echo "If this is not a visual change, add '<!-- no-screenshot -->' to the PR body."
+            # Check for opt-out
+            if echo "$PR_BODY" | grep -q 'no-screenshot'; then
+              echo "✅ Opted out of screenshot requirement"
+              exit 0
+            fi
+            exit 1
+          fi
