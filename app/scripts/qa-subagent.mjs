@@ -65,7 +65,8 @@ const run = async () => {
     apiLogTail: '',
   }
 
-  const apiProcess = spawn(pnpmCmd, ['api'], {
+  // Spawn node directly (not pnpm api) to avoid --watch keeping the process alive in CI
+  const apiProcess = spawn('node', [path.join(appRoot, 'server', 'local-api.mjs')], {
     cwd: appRoot,
     env: {
       ...process.env,

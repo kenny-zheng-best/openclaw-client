@@ -97,8 +97,9 @@ const waitUrlReady = async (url, timeoutMs, label) => {
   throw new Error(`${label} timeout after ${timeoutMs}ms: ${url}`)
 }
 
-const startService = (name, args, extraEnv = {}) => {
-  const proc = spawn(pnpmCmd, args, {
+const startService = (name, args, extraEnv = {}, { cmd } = {}) => {
+  const command = cmd ?? pnpmCmd
+  const proc = spawn(command, args, {
     cwd: appRoot,
     env: {
       ...process.env,
@@ -182,16 +183,16 @@ const runSmoke = async () => {
 
     report.startedApiByScript = true
     report.startedDevByScript = true
-    startService('api', ['api'], {
+    startService('api', [path.join(appRoot, 'server', 'local-api.mjs')], {
       OPENCLAW_LOCAL_API_PORT: String(smokeApiPort),
       OPENCLAW_CHAT_MODE: smokeChatMode,
       OPENCLAW_CLIENT_ROOT: sandboxRoot,
       OPENCLAW_WORKSPACE_ROOT: smokeWorkspaceRoot,
       OPENCLAW_AGENTS_STATE_FILE: smokeAgentsStateFile,
-    })
+    }, { cmd: 'node' })
     await waitUrlReady(apiHealthUrl, bootTimeoutMs, 'Local API')
 
-    startService('dev', ['dev', '--host', '127.0.0.1', '--port', String(smokeWebPort), '--strictPort'], {
+    startService('dev', ['dev:ui', '--host', '127.0.0.1', '--port', String(smokeWebPort), '--strictPort'], {
       VITE_OPENCLAW_API_BASE: apiBaseUrl,
     })
     await waitUrlReady(webUrl, bootTimeoutMs, 'Frontend')
