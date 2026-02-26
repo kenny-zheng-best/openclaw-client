@@ -90,3 +90,56 @@ jobs:
           path: |
             app/output/
           retention-days: 7
+
+      - name: Post E2E screenshot to PR
+        if: github.event_name == 'pull_request' && always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        working-directory: app
+        run: |
+          SCREENSHOT=$(find output/playwright -name '*.png' -type f | head -1)
+          if [ -z "$SCREENSHOT" ]; then
+            echo "No screenshot found, skipping"
+            exit 0
+          fi
+
+          # Upload image to the PR as a comment with embedded image
+          # GitHub doesn't support direct image upload via API, so we use
+          # the artifact URL and a markdown summary instead
+          QA_REPORT="output/qa-subagent/report.json"
+          QA_RESULT="N/A"
+          if [ -f "$QA_REPORT" ]; then
+            QA_STATUS=$(python3 -c "import json; r=json.load(open('$QA_REPORT')); print(r['status'])" 2>/dev/null || echo "unknown")
+            QA_COUNT=$(python3 -c "import json; r=json.load(open('$QA_REPORT')); print(len(r['assertions']))" 2>/dev/null || echo "?")
+            if [ "$QA_STATUS" = "pass" ]; then
+              QA_RESULT="✅ $QA_COUNT assertions passed"
+            else
+              QA_RESULT="❌ Failed ($QA_STATUS)"
+            fi
+          fi
+
+          SMOKE_REPORT="output/playwright/e2e-chat/report.json"
+          SMOKE_RESULT="N/A"
+          if [ -f "$SMOKE_REPORT" ]; then
+            SMOKE_STATUS=$(python3 -c "import json; r=json.load(open('$SMOKE_REPORT')); print(r['status'])" 2>/dev/null || echo "unknown")
+            if [ "$SMOKE_STATUS" = "pass" ]; then
+              SMOKE_RESULT="✅ Passed"
+            else
+              SMOKE_RESULT="❌ Failed ($SMOKE_STATUS)"
+            fi
+          fi
+
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
+          ## 🤖 E2E Test Report
+
+          | Test | Result |
+          |------|--------|
+          | QA Subagent (API) | $QA_RESULT |
+          | Smoke E2E (Playwright) | $SMOKE_RESULT |
+
+          📎 [Download screenshots & reports]($RUN_URL) → Artifacts → \`e2e-results\`
+          EOF
+          )"
