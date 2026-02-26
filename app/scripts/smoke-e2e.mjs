@@ -101,12 +101,14 @@ const startService = (name, args, extraEnv = {}, { cmd } = {}) => {
   const command = cmd ?? pnpmCmd
   const proc = spawn(command, args, {
     cwd: appRoot,
+    detached: true,
     env: {
       ...process.env,
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  proc.unref()
 
   const logs = []
   proc.stdout.on('data', (chunk) => {
@@ -125,10 +127,11 @@ const stopStartedServices = async () => {
     if (service.proc.killed) {
       continue
     }
-    service.proc.kill('SIGTERM')
+    // Kill the entire process group to ensure child processes are cleaned up
+    try { process.kill(-service.proc.pid, 'SIGTERM') } catch { /* ignore */ }
     await sleep(500)
     if (service.proc.exitCode === null) {
-      service.proc.kill('SIGKILL')
+      try { process.kill(-service.proc.pid, 'SIGKILL') } catch { /* ignore */ }
       await sleep(200)
     }
   }
@@ -192,7 +195,7 @@ const runSmoke = async () => {
     }, { cmd: 'node' })
     await waitUrlReady(apiHealthUrl, bootTimeoutMs, 'Local API')
 
-    startService('dev', ['dev:ui', '--host', '127.0.0.1', '--port', String(smokeWebPort), '--strictPort'], {
+    startService('dev', ['vite', '--host', '127.0.0.1', '--port', String(smokeWebPort), '--strictPort'], {
       VITE_OPENCLAW_API_BASE: apiBaseUrl,
     })
     await waitUrlReady(webUrl, bootTimeoutMs, 'Frontend')
